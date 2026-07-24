@@ -1,53 +1,59 @@
 // Armazenamento de acessos.
 //
-// Estratégia (nesta ordem):
-//   1. Vercel KV / Upstash Redis via REST  -> persistente em produção
-//   2. Arquivo local JSONL (data/acessos.jsonl OU /tmp em serverless)
-//   3. console.log (sempre)                -> aparece nos Runtime Logs da Vercel
+// Prioridade:
+//   1. Supabase (Postgres via REST/PostgREST) -> persistente em produção
+//   2. Arquivo local JSONL (data/acessos.jsonl) -> testes locais
+//   3. console.log (sempre)                     -> Runtime Logs da Vercel
 //
-// Para persistência real EM PRODUÇÃO, adicione um "KV" (Upstash) no dashboard
-// da Vercel e conecte ao projeto — as variáveis KV_REST_API_URL e
-// KV_REST_API_TOKEN são injetadas automaticamente. Localmente, o arquivo
-// data/acessos.jsonl já registra tudo e pode ser baixado.
+// Requer a tabela `acessos` no Supabase (SQL no README/instruções).
+// Variáveis: SUPABASE_URL e SUPABASE_SECRET_KEY.
 
 import fs from "fs";
 import path from "path";
 
-// Aceita tanto as variáveis do "Vercel KV" quanto as do "Upstash Redis"
-// (o marketplace da Vercel injeta uma ou outra dependendo da integração).
-const KV_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-const KV_TOKEN =
-  process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-const LIST_KEY = "acessos";
+const SB_URL = process.env.SUPABASE_URL;
+const SB_KEY = process.env.SUPABASE_SECRET_KEY;
+const TABLE = "acessos";
 
 export type Hit = Record<string, unknown> & { id: string; ts: string };
 
 // ---------------------------------------------------------------------------
-// KV (produção)
+// Supabase (produção)
 // ---------------------------------------------------------------------------
-function kvEnabled() {
-  return Boolean(KV_URL && KV_TOKEN);
+function supabaseEnabled() {
+  return Boolean(SB_URL && SB_KEY);
 }
 
-async function kv(command: (string | number)[]): Promise<any> {
-  const res = await fetch(KV_URL as string, {
+function sbHeaders() {
+  return {
+    apikey: SB_KEY as string,
+    Authorization: `Bearer ${SB_KEY}`,
+    "Content-Type": "application/json",
+  };
+}
+
+async function sbInsert(hit: Hit) {
+  const res = await fetch(`${SB_URL}/rest/v1/${TABLE}`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${KV_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(command),
+    headers: { ...sbHeaders(), Prefer: "return=minimal" },
+    body: JSON.stringify([{ id: hit.id, ts: hit.ts, js: (hit as any).js ?? null, hit }]),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`KV ${res.status}: ${await res.text()}`);
-  return res.json();
+  if (!res.ok) throw new Error(`Supabase insert ${res.status}: ${await res.text()}`);
+}
+
+async function sbSelect(limit: number): Promise<Hit[]> {
+  const url = `${SB_URL}/rest/v1/${TABLE}?select=hit&order=ts.desc&limit=${limit}`;
+  const res = await fetch(url, { headers: sbHeaders(), cache: "no-store" });
+  if (!res.ok) throw new Error(`Supabase select ${res.status}: ${await res.text()}`);
+  const rows: { hit: Hit }[] = await res.json();
+  return rows.map((r) => r.hit).filter(Boolean);
 }
 
 // ---------------------------------------------------------------------------
-// Arquivo local (.jsonl — um JSON por linha)
+// Arquivo local (.jsonl)
 // ---------------------------------------------------------------------------
 function filePath() {
-  // Em ambiente serverless o único diretório gravável é /tmp.
   const base =
     process.env.VERCEL === "1"
       ? path.join("/tmp", "relatorio-data")
@@ -79,7 +85,6 @@ function readFileHits(limit: number): Hit[] {
         }
       })
       .filter(Boolean) as Hit[];
-    // Mais recentes primeiro.
     return hits.reverse().slice(0, limit);
   } catch (err) {
     console.error("[FILE] falha ao ler:", err);
@@ -93,34 +98,23 @@ function readFileHits(limit: number): Hit[] {
 export async function saveHit(hit: Hit): Promise<void> {
   console.log("[ACESSO]", JSON.stringify(hit));
 
-  // Sempre grava no arquivo local (relatório baixável / testes locais).
-  appendFile(hit);
-
-  if (!kvEnabled()) return;
-  try {
-    await kv(["LPUSH", LIST_KEY, JSON.stringify(hit)]);
-    await kv(["LTRIM", LIST_KEY, 0, 4999]);
-  } catch (err) {
-    console.error("[KV] falha ao salvar:", err);
+  if (supabaseEnabled()) {
+    try {
+      await sbInsert(hit);
+      return;
+    } catch (err) {
+      console.error("[SUPABASE] falha ao salvar, caindo para arquivo:", err);
+    }
   }
+  appendFile(hit);
 }
 
 export async function listHits(limit = 500): Promise<Hit[]> {
-  if (kvEnabled()) {
+  if (supabaseEnabled()) {
     try {
-      const out = await kv(["LRANGE", LIST_KEY, 0, limit - 1]);
-      const arr: string[] = out?.result ?? [];
-      return arr
-        .map((s) => {
-          try {
-            return JSON.parse(s) as Hit;
-          } catch {
-            return null;
-          }
-        })
-        .filter(Boolean) as Hit[];
+      return await sbSelect(limit);
     } catch (err) {
-      console.error("[KV] falha ao ler:", err);
+      console.error("[SUPABASE] falha ao ler:", err);
     }
   }
   return readFileHits(limit);
@@ -128,7 +122,8 @@ export async function listHits(limit = 500): Promise<Hit[]> {
 
 export function storageInfo() {
   return {
-    kv: kvEnabled(),
+    supabase: supabaseEnabled(),
+    kv: supabaseEnabled(), // compat: painel usa isso como "persistente"
     file: filePath(),
   };
 }
