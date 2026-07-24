@@ -26,8 +26,29 @@ export default async function AdminPage({
       <h1 style={{ marginBottom: 4 }}>Relatório de acessos</h1>
       <p style={{ color: "#666", marginTop: 0 }}>
         {hits.length} registro(s) · Armazenamento:{" "}
-        {info.kv ? "Vercel KV (persistente)" : `arquivo local`}
+        {info.kv ? "Vercel KV / Upstash (persistente) ✅" : "arquivo local ⚠️"}
       </p>
+
+      {!info.kv && (
+        <div
+          style={{
+            background: "#fff8e1",
+            border: "1px solid #f0d000",
+            borderRadius: 8,
+            padding: "12px 16px",
+            fontSize: 13,
+            color: "#6a5300",
+            marginBottom: 8,
+          }}
+        >
+          <strong>Atenção:</strong> não há banco persistente conectado. Em
+          produção (Vercel) os acessos <strong>não são salvos</strong> de forma
+          confiável, pois o armazenamento em arquivo é temporário e não é
+          compartilhado entre as funções serverless. Conecte um{" "}
+          <strong>Upstash Redis / Vercel KV</strong> ao projeto para persistir e
+          ver os dados aqui.
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 12, margin: "16px 0" }}>
         <a href="/api/export?format=json" style={btn}>⬇ Baixar JSON</a>

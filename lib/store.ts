@@ -13,8 +13,11 @@
 import fs from "fs";
 import path from "path";
 
-const KV_URL = process.env.KV_REST_API_URL;
-const KV_TOKEN = process.env.KV_REST_API_TOKEN;
+// Aceita tanto as variáveis do "Vercel KV" quanto as do "Upstash Redis"
+// (o marketplace da Vercel injeta uma ou outra dependendo da integração).
+const KV_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+const KV_TOKEN =
+  process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
 const LIST_KEY = "acessos";
 
 export type Hit = Record<string, unknown> & { id: string; ts: string };
